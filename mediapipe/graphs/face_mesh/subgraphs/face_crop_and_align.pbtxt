@@ -1,0 +1,54 @@
+type: "FaceCropAndAlign"
+
+# IMAGE:input_image <- GpuBuffer
+input_stream: "IMAGE:input_image"
+# Collection of detected/predicted faces' landmarks <- std::vector<NormalizedLandmarkList>
+input_stream: "LANDMARKS:multi_face_landmarks"
+# Face's ROIs <- std::vector<NormalizedRect>
+input_stream: "NORM_RECTS:rects"
+# Face's target_size after rescaling
+input_side_packet: "TARGET_SIZE:target_size"
+
+# GpuBuffer image with rendered ROIs
+output_stream: "IMAGE:output_image"
+# Cropped/Aligned faces with computed landmarks wrt new axises
+output_stream: "FACE_LANDMARKS:multi_faces_with_landmarks"
+
+# Node for converting GpuBuffer -> ImageFrame
+node {
+  calculator: "GpuBufferToImageFrameCalculator",
+  input_stream: "IMAGE:input_image",
+  output_stream: "IMAGE:input_image_frame"
+}
+
+# Node for computing ...
+node {
+  calculator: "FaceCropAndAlignCalculator"
+  input_stream: "IMAGE:input_image_frame"
+  input_stream: "LANDMARKS:multi_face_landmarks"
+  input_stream: "NORM_RECTS:rects"
+  input_side_packet: "TARGET_SIZE:target_size"
+  output_stream: "FACE_LANDMARKS:multi_faces_with_landmarks"
+}
+
+# Nodes for rendering ROIs (rects)
+# TODO: build new subgraph without renderer
+node {
+  calculator: "RectToRenderDataCalculator"
+  input_stream: "NORM_RECTS:rects"
+  output_stream: "RENDER_DATA:rects_render_data"
+  node_options: {
+    [type.googleapis.com/mediapipe.RectToRenderDataCalculatorOptions] {
+        filled: false
+        color { r: 0, g: 255, b: 0 }
+        thickness: 4.0
+    }
+  }
+}
+
+node {
+  calculator: "AnnotationOverlayCalculator"
+  input_stream: "IMAGE_GPU:input_image"
+  input_stream: "rects_render_data"
+  output_stream: "IMAGE_GPU:output_image"
+}

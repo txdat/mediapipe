@@ -6,11 +6,17 @@ input_stream: "input_video"
 # Max number of faces to detect/process. (int)
 input_side_packet: "num_faces"
 
+# Target size of face after aligning (int)
+input_side_packet: "target_size"
+
 # Output image with rendered results. (GpuBuffer)
 output_stream: "output_video"
 # Collection of detected/processed faces, each represented as a list of
 # landmarks. (std::vector<NormalizedLandmarkList>)
-output_stream: "multi_face_landmarks"
+#output_stream: "multi_face_landmarks"
+# Collection of cropped/aligned faces, new computed landmarks wrt new axises
+# (std::vector<FaceLandmarks>)
+output_stream: "multi_faces_with_landmarks"
 
 # Throttles the images flowing downstream for flow control. It passes through
 # the very first incoming image unaltered, and waits for downstream nodes
@@ -45,11 +51,21 @@ node {
 }
 
 # Subgraph that renders face-landmark annotation onto the input image.
+#node {
+#  calculator: "FaceRendererGpu"
+#  input_stream: "IMAGE:throttled_input_video"
+#  input_stream: "LANDMARKS:multi_face_landmarks"
+#  input_stream: "NORM_RECTS:face_rects_from_landmarks"
+#  input_stream: "DETECTIONS:face_detections"
+#  output_stream: "IMAGE:output_video"
+#}
+# Subgraph ...
 node {
-  calculator: "FaceRendererGpu"
+  calculator: "FaceCropAndAlign",
   input_stream: "IMAGE:throttled_input_video"
   input_stream: "LANDMARKS:multi_face_landmarks"
   input_stream: "NORM_RECTS:face_rects_from_landmarks"
-  input_stream: "DETECTIONS:face_detections"
+  input_side_packet: "TARGET_SIZE:target_size"
   output_stream: "IMAGE:output_video"
+  output_stream: "FACE_LANDMARKS:multi_faces_with_landmarks"
 }

@@ -105,6 +105,13 @@ cat > $(OUTS) <<EOF
         ],
     )
 
+    _proto_java_src_generator(
+        name = "face_data_proto",
+        proto_src = "mediapipe/framework/formats/face_data.proto",
+        java_lite_out = "com/google/mediapipe/formats/proto/FaceDataProto.java",
+        srcs = ["//mediapipe/framework/formats:protos_src"]
+    )
+
     android_library(
         name = name + "_android_lib",
         srcs = [
@@ -113,6 +120,7 @@ cat > $(OUTS) <<EOF
             "//mediapipe/java/com/google/mediapipe/glutil:java_src",
             "com/google/mediapipe/proto/CalculatorProto.java",
             "com/google/mediapipe/formats/proto/LandmarkProto.java",
+            "com/google/mediapipe/formats/proto/FaceDataProto.java",
             "com/google/mediapipe/formats/proto/DetectionProto.java",
             "com/google/mediapipe/formats/proto/LocationDataProto.java",
             "com/google/mediapipe/formats/annotation/proto/RasterizationProto.java",

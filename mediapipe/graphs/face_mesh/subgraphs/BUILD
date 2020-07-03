@@ -32,6 +32,19 @@ cc_library(
     ],
 )
 
+# depends on part of renderer_calculators
+mediapipe_simple_subgraph(
+    name = "face_crop_and_align",
+    graph = "face_crop_and_align.pbtxt",
+    register_as = "FaceCropAndAlign",
+    deps = [
+        "//mediapipe:gpu:gpu_buffer_to_image_frame_calculator",
+        "//mediapipe/calculators/face:face_crop_and_align_calculator",
+        "//mediapipe/calculators/util:annotation_overlay_calculator",
+        "//mediapipe/calculators/util:rect_to_render_data_calculator",
+    ]
+)
+
 mediapipe_simple_subgraph(
     name = "face_renderer_gpu",
     graph = "face_renderer_gpu.pbtxt",

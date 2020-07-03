@@ -210,6 +210,13 @@ mediapipe_proto_library(
     ],
 )
 
+mediapipe_proto_library(
+    name = "face_data_proto",
+    srcs = ["face_data.proto"],
+    visibility = ["//visibility:public"],
+    deps = ["//mediapipe/framework/formats:landmark_proto"]
+)
+
 # Expose the proto source files for building mediapipe AAR.
 filegroup(
     name = "protos_src",
