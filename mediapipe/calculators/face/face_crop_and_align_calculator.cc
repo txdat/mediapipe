@@ -47,7 +47,7 @@ inline NormalizedLandmarkList convertPointsToNormalizedLandmarks(
     const std::vector<cv::Point3f> &landmark_points,
     const NormalizedLandmarkList &landmark_list, float image_width,
     float image_height) {
-  NormalizedLandmarkList _landmark_list;
+  NormalizedLandmarkList landmark_list_;
   for (int i = 0; i < landmark_points.size(); i++) { // skip z-axis
     NormalizedLandmark landmark;
     landmark.set_x(landmark_points[i].x / image_width);
@@ -55,20 +55,18 @@ inline NormalizedLandmarkList convertPointsToNormalizedLandmarks(
     landmark.set_z(landmark_points[i].z);
     landmark.set_visibility(landmark_list.landmark(i).visibility());
 
-    _landmark_list.add_landmark(landmark);
+    landmark_list_.add_landmark(landmark);
   }
 
-  return _landmark_list;
+  return landmark_list_;
 }
 
 inline cv::Rect computeRectBbox(const NormalizedRect &rect, float image_width,
-                                float image_height) {
-  cv::RotatedRect rotated_rect =
-      cv::RotatedRect(cv::Point2f(rect.x_center() * image_width,
-                                  rect.y_center() * image_height),
-                      cv::Size2f(std::max(rect.width(), rect.height()),
-                                 std::max(rect.width(), rect.height())),
-                      RADIAN_TO_DEGREE(rect.rotation()));
+                                float image_height, float size_) {
+  cv::RotatedRect rotated_rect = cv::RotatedRect(
+      cv::Point2f(rect.x_center() * image_width,
+                  rect.y_center() * image_height),
+      cv::Size2f(size_, size_), RADIAN_TO_DEGREE(rect.rotation()));
 
   return rotated_rect.boundingRect();
 }
@@ -184,8 +182,10 @@ public:
     // COMPUTE FACE'S IMAGE AND LANDMARKS...
     std::vector<FaceLandmarks> multi_faces_with_landmarks;
     for (int i = 0; i < rects.size(); i++) {
-      cv::Rect bbox = computeRectBbox(rects[i], image_width,
-                                      image_height); // return squared bbox
+      float size_ = std::max(rect.width(), rect.height());
+      cv::Rect bbox =
+          computeRectBbox(rects[i], image_width, image_height,
+                          size_); // return squared bbox (size_Xsize_)
       std::vector<cv::Point3f> landmark_points =
           convertNormalizedLandmarksToPoints(
               multi_face_landmarks[i], image_width,
@@ -194,18 +194,18 @@ public:
       cv::Mat roi = cropImageWithPoints(image, bbox, landmark_points);
       roi = rotateImageWithPoints(roi, landmark_points,
                                   RADIAN_TO_DEGREE(rects[i].rotation()));
-      roi = cropImageWithPoints(
-          roi,
-          cv::Rect(float(roi.cols) / 2 - rects[i].width() / 2,
-                   float(roi.rows) / 2 - rects[i].height() / 2,
-                   rects[i].width(), rects[i].height()),
-          landmark_points);
+      roi = cropImageWithPoints(roi,
+                                cv::Rect(float(roi.cols) / 2 - size_ / 2,
+                                         float(roi.rows) / 2 - size_ / 2, size_,
+                                         size_),
+                                landmark_points);
       cv::resize(roi, roi, target_size, 0, 0, cv::INTER_CUBIC);
 
       FaceLandmarks face_with_landmarks;
       face_with_landmarks.set_data(serializeCvMat(roi));
       face_with_landmarks.set_landmarks(convertPointsToNormalizedLandmarks(
-          landmark_points, multi_face_landmarks[i], image_width, image_height));
+          landmark_points, multi_face_landmarks[i], size_,
+          size_)); // not affected by rescaling
       multi_face_with_landmarks.push_back(face_with_landmarks);
     }
 

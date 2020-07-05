@@ -5,4 +5,4 @@ graph:
 all:
 	make aar && make graph
 clean:
-	bazel clean --expunge --async
+	bazel --output_user_root=/home/txdat/HDD/bazel clean --expunge --async
