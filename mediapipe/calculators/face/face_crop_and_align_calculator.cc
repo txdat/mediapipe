@@ -8,9 +8,12 @@
 #include "mediapipe/framework/port/opencv_imgproc_inc.h"
 #include "mediapipe/framework/port/ret_check.h"
 
+#include <algorithm>
 #include <cmath>
 #include <memory>
 #include <vector>
+
+#define RADIAN_TO_DEGREE(r) (r) * 180 / M_PI
 
 namespace mediapipe {
 
@@ -23,9 +26,94 @@ constexpr char INPUT_LANDMARKS[] =
 constexpr char INPUT_TARGET_SIZE[] = "TARGET_SIZE"; // int (side_packet)
 constexpr char OUTPUT[] = "FACE_LANDMARKS"; // std::vector<FaceLandmarks>
 
-//--------------------------------
-// Rotated Rectangle Cropping
-//--------------------------------
+//----------------------------------------
+// ROTATED RECTANGLE CROPPING WITH POINTS
+//----------------------------------------
+
+inline std::vector<cv::Point3f>
+convertNormalizedLandmarksToPoints(const NormalizedLandmarkList &landmark_list,
+                                   float image_width, float image_height) {
+  std::vector<cv::Point3f> landmark_points;
+  for (int i = 0; i < landmark_list.landmark_size(); i++) { // skip z-axis
+    const NormalizedLandmark &landmark = landmark_list.landmark(i);
+    landmark_points.push_back(cv::Point3f(
+        landmark.x() * image_width, landmark.y() * image_height, landmark.z()));
+  }
+
+  return landmark_points;
+}
+
+inline NormalizedLandmarkList convertPointsToNormalizedLandmarks(
+    const std::vector<cv::Point3f> &landmark_points,
+    const NormalizedLandmarkList &landmark_list, float image_width,
+    float image_height) {
+  NormalizedLandmarkList _landmark_list;
+  for (int i = 0; i < landmark_points.size(); i++) { // skip z-axis
+    NormalizedLandmark landmark;
+    landmark.set_x(landmark_points[i].x / image_width);
+    landmark.set_y(landmark_points[i].y / image_height);
+    landmark.set_z(landmark_points[i].z);
+    landmark.set_visibility(landmark_list.landmark(i).visibility());
+
+    _landmark_list.add_landmark(landmark);
+  }
+
+  return _landmark_list;
+}
+
+inline cv::Rect computeRectBbox(const NormalizedRect &rect, float image_width,
+                                float image_height) {
+  cv::RotatedRect rotated_rect =
+      cv::RotatedRect(cv::Point2f(rect.x_center() * image_width,
+                                  rect.y_center() * image_height),
+                      cv::Size2f(std::max(rect.width(), rect.height()),
+                                 std::max(rect.width(), rect.height())),
+                      RADIAN_TO_DEGREE(rect.rotation()));
+
+  return rotated_rect.boundingRect();
+}
+
+inline cv::Mat cropImageWithPoints(const cv::Mat &image, const cv::Rect &rect,
+                                   std::vector<cv::Point3f> &points) {
+  for (cv::Point3f &point : points) { // skip z-axis
+    point.x -= rect.x;
+    point.y -= rect.y;
+  }
+
+  return image(rect);
+}
+
+inline cv::Mat rotateImageWithPoints(const cv::Mat &image,
+                                     std::vector<cv::Point3f> &points,
+                                     double rotation) {
+  cv::Mat rotation_mat = cv::getRotationMatrix2D(
+      cv::Point2f(float(image.cols) / 2.0, float(image.rows) / 2.0), rotation,
+      /*scale*/ 1.0);
+
+  double abs_cos = std::abs(rotation_mat.at<double>(0, 0));
+  double abs_sin = std::abs(rotation_mat.at<double>(0, 1));
+  double bound_w = abs_sin * image.rows + abs_cos * image.cols;
+  double bound_h = abs_cos * image.rows + abs_sin * image.cols;
+
+  rotation_mat.at<double>(0, 2) += bound_w / 2 - double(image.cols) / 2;
+  rotation_mat.at<double>(1, 2) += bound_h / 2 - double(image.rows) / 2;
+
+  // rotate image
+  cv::Mat rotated_image;
+  cv::warpAffine(image, rotated_image, rotation_mat, cv::Size(bound_w, bound_h),
+                 cv::INTER_CUBIC);
+
+  // rotate points
+  cv::Mat point_mat = cv::Mat(points).reshape(1);
+  point_mat = (rotation_mat * point_mat.t()).t();
+
+  for (int i = 0; i < points.size(); i++) { // skip z-axis
+    points[i].x = point_mat.at<double>(i, 0);
+    points[i].y = point_mat.at<double>(i, 1);
+  }
+
+  return rotated_image;
+}
 
 inline CvMat serializeCvMat(const cv::Mat &mat) { // encode mat to bytes
   CvMat encoded_mat;
@@ -40,7 +128,7 @@ inline CvMat serializeCvMat(const cv::Mat &mat) { // encode mat to bytes
 
 class FaceCropAndAlignCalculator : public CalculatorBase {
 private:
-  int target_size = 224; // face's size after rescaling
+  cv::Size target_size = cv::Size(224, 224); // face's size after rescaling
 
 public:
   static ::mediapipe::Status GetContract(CalculatorContract *cc) {
@@ -71,7 +159,8 @@ public:
 
     if (cc->InputSidePackets().HasTag(
             INPUT_TARGET_SIZE)) { // get new target_size if available
-      target_size = cc->InputSidePackets().Tag(INPUT_TARGET_SIZE).Get<int>();
+      int size_ = cc->InputSidePackets().Tag(INPUT_TARGET_SIZE).Get<int>();
+      target_size = cv::Size(size_, size_);
     }
 
     return ::mediapipe::OkStatus();
@@ -82,6 +171,7 @@ public:
     const ImageFrame &input_frame =
         cc->Inputs().Tag(INPUT_IMAGE).Get<ImageFrame>();
     cv::Mat image = formats::MatView(&input_frame);
+    float image_width = image.cols, image_height = image.rows;
 
     const std::vector<NormalizedRect> &rects =
         cc->Inputs().Tag(INPUT_RECTS).Get<std::vector<NormalizedRect>>();
@@ -91,14 +181,37 @@ public:
             .Tag(INPUT_LANDMARKS)
             .Get<std::vector<NormalizedLandmarkList>>();
 
-    int num_faces = rects.size();
-
     // COMPUTE FACE'S IMAGE AND LANDMARKS...
-    for (int i = 0; i < num_faces; i++) {
-      // rotate and crop rect
+    std::vector<FaceLandmarks> multi_faces_with_landmarks;
+    for (int i = 0; i < rects.size(); i++) {
+      cv::Rect bbox = computeRectBbox(rects[i], image_width,
+                                      image_height); // return squared bbox
+      std::vector<cv::Point3f> landmark_points =
+          convertNormalizedLandmarksToPoints(
+              multi_face_landmarks[i], image_width,
+              image_height); // unnormalize landmarks
+
+      cv::Mat roi = cropImageWithPoints(image, bbox, landmark_points);
+      roi = rotateImageWithPoints(roi, landmark_points,
+                                  RADIAN_TO_DEGREE(rects[i].rotation()));
+      roi = cropImageWithPoints(
+          roi,
+          cv::Rect(float(roi.cols) / 2 - rects[i].width() / 2,
+                   float(roi.rows) / 2 - rects[i].height() / 2,
+                   rects[i].width(), rects[i].height()),
+          landmark_points);
+      cv::resize(roi, roi, target_size, 0, 0, cv::INTER_CUBIC);
+
+      FaceLandmarks face_with_landmarks;
+      face_with_landmarks.set_data(serializeCvMat(roi));
+      face_with_landmarks.set_landmarks(convertPointsToNormalizedLandmarks(
+          landmark_points, multi_face_landmarks[i], image_width, image_height));
+      multi_face_with_landmarks.push_back(face_with_landmarks);
     }
 
     // GENERATE OUTPUT...
+    cc->Outputs().Tag(OUTPUT).Add(multi_face_with_landmarks,
+                                  cc->InputTimestamp());
 
     return ::mediapipe::OkStatus();
   }
