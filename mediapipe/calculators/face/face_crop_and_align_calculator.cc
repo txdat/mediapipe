@@ -1,4 +1,3 @@
-#include "glog/logging.h"
 #include "mediapipe/framework/calculator_framework.h"
 #include "mediapipe/framework/formats/face_data.pb.h"
 #include "mediapipe/framework/formats/image_frame.h"
@@ -8,6 +7,7 @@
 #include "mediapipe/framework/port/opencv_core_inc.h"
 #include "mediapipe/framework/port/opencv_imgproc_inc.h"
 #include "mediapipe/framework/port/ret_check.h"
+// #include "glog/logging.h"
 
 #include <algorithm>
 #include <cmath>
@@ -36,8 +36,8 @@ constexpr char OUTPUT[] = "FACE_LANDMARKS"; // std::vector<FaceLandmarks>
 inline std::vector<cv::Point3d>
 convertNormalizedLandmarksToPoints(const NormalizedLandmarkList &landmark_list,
                                    float image_width, float image_height) {
-  LOG(INFO) << "convertNormalizedLandmarksToPoints: "
-            << landmark_list.landmark_size() << " points";
+  // LOG(INFO) << "convertNormalizedLandmarksToPoints: "
+  //           << landmark_list.landmark_size() << " points";
 
   std::vector<cv::Point3d> landmark_points;
   for (int i = 0; i < landmark_list.landmark_size(); i++) { // skip z-axis
@@ -53,8 +53,9 @@ inline NormalizedLandmarkList *convertPointsToNormalizedLandmarks(
     const std::vector<cv::Point3d> &landmark_points,
     const NormalizedLandmarkList &landmark_list, float image_width,
     float image_height) {
-  LOG(INFO) << "convertPointsToNormalizedLandmarks: " << landmark_points.size()
-            << " points";
+  // LOG(INFO) << "convertPointsToNormalizedLandmarks: " <<
+  // landmark_points.size()
+  //           << " points";
 
   NormalizedLandmarkList *landmark_list_ = new NormalizedLandmarkList();
   for (int i = 0; i < landmark_points.size(); i++) { // skip z-axis
@@ -73,7 +74,7 @@ inline NormalizedLandmarkList *convertPointsToNormalizedLandmarks(
 
 inline cv::Rect computeRectBbox(const NormalizedRect &rect, float image_width,
                                 float image_height, float size_) {
-  LOG(INFO) << "computeRectBbox: rect:\n" << rect.DebugString();
+  // LOG(INFO) << "computeRectBbox: rect:\n" << rect.DebugString();
 
   cv::RotatedRect rotated_rect = cv::RotatedRect(
       cv::Point2f(rect.x_center() * image_width,
@@ -85,8 +86,8 @@ inline cv::Rect computeRectBbox(const NormalizedRect &rect, float image_width,
 
 inline cv::Mat cropImageWithPoints(const cv::Mat &image, const cv::Rect &rect,
                                    std::vector<cv::Point3d> &points) {
-  LOG(INFO) << "cropImageWithPoints: rect: " << rect << ", image: ["
-            << image.rows << "x" << image.cols << "]";
+  // LOG(INFO) << "cropImageWithPoints: rect: " << rect << ", image: ["
+  //           << image.rows << "x" << image.cols << "]";
 
   // padding image for cropping
   int top = std::max(-rect.y, 0);
@@ -111,7 +112,7 @@ inline cv::Mat cropImageWithPoints(const cv::Mat &image, const cv::Rect &rect,
 inline cv::Mat rotateImageWithPoints(const cv::Mat &image,
                                      std::vector<cv::Point3d> &points,
                                      double rotation) {
-  LOG(INFO) << "rotateImageWithPoints: rotation: " << rotation;
+  // LOG(INFO) << "rotateImageWithPoints: rotation: " << rotation;
 
   cv::Mat rotation_mat = cv::getRotationMatrix2D(
       cv::Point2f(float(image.cols) / 2.0, float(image.rows) / 2.0), rotation,
@@ -143,7 +144,7 @@ inline cv::Mat rotateImageWithPoints(const cv::Mat &image,
 }
 
 inline CvMat *serializeCvMat(const cv::Mat &mat) { // encode mat to bytes
-  LOG(INFO) << "serializeCvMat: [" << mat.rows << "x" << mat.cols << "]";
+  // LOG(INFO) << "serializeCvMat: [" << mat.rows << "x" << mat.cols << "]";
 
   CvMat *encoded_mat = new CvMat();
   encoded_mat->set_rows(mat.rows);
@@ -173,7 +174,7 @@ public:
     cc->Inputs()
         .Tag(INPUT_LANDMARKS)
         .Set<std::vector<NormalizedLandmarkList>>();
-    cc->Outputs().Tag(OUTPUT).Set<std::vector<FaceLandmarks>>();
+    cc->Outputs().Tag(OUTPUT).Set<FaceLandmarksList>();
 
     // check side_packet's tag (optional)
     if (cc->InputSidePackets().HasTag(INPUT_TARGET_SIZE)) {
@@ -211,8 +212,10 @@ public:
             .Get<std::vector<NormalizedLandmarkList>>();
 
     // COMPUTE FACE'S IMAGE AND LANDMARKS...
-    std::vector<FaceLandmarks> multi_faces_with_landmarks;
+    FaceLandmarksList *multi_faces_with_landmarks = new FaceLandmarksList();
     for (int i = 0; i < rects.size(); i++) {
+      multi_faces_with_landmarks->add_face_landmarks();
+
       float size_ = std::max(rects[i].width() * image_width,
                              rects[i].height() *
                                  image_height); // unnormalize to squared roi
@@ -232,19 +235,18 @@ public:
                                          float(roi.rows) / 2 - size_ / 2, size_,
                                          size_),
                                 landmark_points);
-      cv::resize(roi, roi, target_size, 0, 0, cv::INTER_AREA);
+      cv::resize(roi, roi, target_size, 0, 0, cv::INTER_CUBIC);
 
-      FaceLandmarks face_with_landmarks;
       // https://stackoverflow.com/questions/53648009/google-protobuf-mutable-foo-or-set-allocated-foo
-      face_with_landmarks.set_allocated_data(serializeCvMat(roi));
-      face_with_landmarks.set_allocated_landmarks(
-          convertPointsToNormalizedLandmarks(
+      multi_faces_with_landmarks->mutable_face_landmarks(i)->set_allocated_data(
+          serializeCvMat(roi));
+      multi_faces_with_landmarks->mutable_face_landmarks(i)
+          ->set_allocated_landmarks(convertPointsToNormalizedLandmarks(
               landmark_points, multi_face_landmarks[i], size_, size_));
-      multi_faces_with_landmarks.push_back(face_with_landmarks);
     }
 
     // GENERATE OUTPUT...
-    cc->Outputs().Tag(OUTPUT).Add(&multi_faces_with_landmarks,
+    cc->Outputs().Tag(OUTPUT).Add(multi_faces_with_landmarks,
                                   cc->InputTimestamp());
 
     return ::mediapipe::OkStatus();
