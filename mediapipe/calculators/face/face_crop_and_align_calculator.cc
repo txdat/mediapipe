@@ -1,3 +1,4 @@
+#include "glog/logging.h"
 #include "mediapipe/framework/calculator_framework.h"
 #include "mediapipe/framework/formats/face_data.pb.h"
 #include "mediapipe/framework/formats/image_frame.h"
@@ -20,9 +21,11 @@ namespace mediapipe {
 // STREAM_NAME
 constexpr char INPUT_IMAGE[] = "IMAGE"; // ImageFrame
 constexpr char INPUT_RECTS[] =
-    "NORM_RECTS"; // std::vector<NormalizedRect>, in [0, 1]
+    "NORM_RECTS"; // std::vector<NormalizedRect>, center location and size are
+                  // in [0, 1]
 constexpr char INPUT_LANDMARKS[] =
-    "LANDMARKS"; // std::vector<NormalizedLandmarkList>, in [0, 1]
+    "LANDMARKS"; // std::vector<NormalizedLandmarkList>,
+                 // coordiates are in [0, 1]
 constexpr char INPUT_TARGET_SIZE[] = "TARGET_SIZE"; // int (side_packet)
 constexpr char OUTPUT[] = "FACE_LANDMARKS"; // std::vector<FaceLandmarks>
 
@@ -30,32 +33,39 @@ constexpr char OUTPUT[] = "FACE_LANDMARKS"; // std::vector<FaceLandmarks>
 // ROTATED RECTANGLE CROPPING WITH POINTS
 //----------------------------------------
 
-inline std::vector<cv::Point3f>
+inline std::vector<cv::Point3d>
 convertNormalizedLandmarksToPoints(const NormalizedLandmarkList &landmark_list,
                                    float image_width, float image_height) {
-  std::vector<cv::Point3f> landmark_points;
+  LOG(INFO) << "convertNormalizedLandmarksToPoints: "
+            << landmark_list.landmark_size() << " points";
+
+  std::vector<cv::Point3d> landmark_points;
   for (int i = 0; i < landmark_list.landmark_size(); i++) { // skip z-axis
     const NormalizedLandmark &landmark = landmark_list.landmark(i);
-    landmark_points.push_back(cv::Point3f(
+    landmark_points.push_back(cv::Point3d(
         landmark.x() * image_width, landmark.y() * image_height, landmark.z()));
   }
 
   return landmark_points;
 }
 
-inline NormalizedLandmarkList convertPointsToNormalizedLandmarks(
-    const std::vector<cv::Point3f> &landmark_points,
+inline NormalizedLandmarkList *convertPointsToNormalizedLandmarks(
+    const std::vector<cv::Point3d> &landmark_points,
     const NormalizedLandmarkList &landmark_list, float image_width,
     float image_height) {
-  NormalizedLandmarkList landmark_list_;
-  for (int i = 0; i < landmark_points.size(); i++) { // skip z-axis
-    NormalizedLandmark landmark;
-    landmark.set_x(landmark_points[i].x / image_width);
-    landmark.set_y(landmark_points[i].y / image_height);
-    landmark.set_z(landmark_points[i].z);
-    landmark.set_visibility(landmark_list.landmark(i).visibility());
+  LOG(INFO) << "convertPointsToNormalizedLandmarks: " << landmark_points.size()
+            << " points";
 
-    landmark_list_.add_landmark(landmark);
+  NormalizedLandmarkList *landmark_list_ = new NormalizedLandmarkList();
+  for (int i = 0; i < landmark_points.size(); i++) { // skip z-axis
+    landmark_list_->add_landmark();
+    landmark_list_->mutable_landmark(i)->set_x(landmark_points[i].x /
+                                               image_width);
+    landmark_list_->mutable_landmark(i)->set_y(landmark_points[i].y /
+                                               image_height);
+    landmark_list_->mutable_landmark(i)->set_z(landmark_points[i].z);
+    landmark_list_->mutable_landmark(i)->set_visibility(
+        landmark_list.landmark(i).visibility());
   }
 
   return landmark_list_;
@@ -63,6 +73,8 @@ inline NormalizedLandmarkList convertPointsToNormalizedLandmarks(
 
 inline cv::Rect computeRectBbox(const NormalizedRect &rect, float image_width,
                                 float image_height, float size_) {
+  LOG(INFO) << "computeRectBbox: rect:\n" << rect.DebugString();
+
   cv::RotatedRect rotated_rect = cv::RotatedRect(
       cv::Point2f(rect.x_center() * image_width,
                   rect.y_center() * image_height),
@@ -72,18 +84,35 @@ inline cv::Rect computeRectBbox(const NormalizedRect &rect, float image_width,
 }
 
 inline cv::Mat cropImageWithPoints(const cv::Mat &image, const cv::Rect &rect,
-                                   std::vector<cv::Point3f> &points) {
-  for (cv::Point3f &point : points) { // skip z-axis
-    point.x -= rect.x;
-    point.y -= rect.y;
+                                   std::vector<cv::Point3d> &points) {
+  LOG(INFO) << "cropImageWithPoints: rect: " << rect << ", image: ["
+            << image.rows << "x" << image.cols << "]";
+
+  // padding image for cropping
+  int top = std::max(-rect.y, 0);
+  int bottom = std::max(rect.y + rect.height - image.rows, 0);
+  int left = std::max(-rect.x, 0);
+  int right = std::max(rect.x + rect.width - image.cols, 0);
+
+  cv::Mat image_;
+  cv::copyMakeBorder(image, image_, top, bottom, left, right,
+                     cv::BORDER_CONSTANT); // padded with zeros
+  cv::Rect rect_ =
+      cv::Rect(rect.x + left, rect.y + top, rect.width, rect.height);
+
+  for (cv::Point3d &point : points) { // skip z-axis
+    point.x += left - rect_.x;
+    point.y += top - rect_.y;
   }
 
-  return image(rect);
+  return image_(rect_);
 }
 
 inline cv::Mat rotateImageWithPoints(const cv::Mat &image,
-                                     std::vector<cv::Point3f> &points,
+                                     std::vector<cv::Point3d> &points,
                                      double rotation) {
+  LOG(INFO) << "rotateImageWithPoints: rotation: " << rotation;
+
   cv::Mat rotation_mat = cv::getRotationMatrix2D(
       cv::Point2f(float(image.cols) / 2.0, float(image.rows) / 2.0), rotation,
       /*scale*/ 1.0);
@@ -103,23 +132,25 @@ inline cv::Mat rotateImageWithPoints(const cv::Mat &image,
 
   // rotate points
   cv::Mat point_mat = cv::Mat(points).reshape(1);
-  point_mat = (rotation_mat * point_mat.t()).t();
+  point_mat = rotation_mat * point_mat.t();
 
   for (int i = 0; i < points.size(); i++) { // skip z-axis
-    points[i].x = point_mat.at<double>(i, 0);
-    points[i].y = point_mat.at<double>(i, 1);
+    points[i].x = point_mat.at<double>(0, i);
+    points[i].y = point_mat.at<double>(1, i);
   }
 
   return rotated_image;
 }
 
-inline CvMat serializeCvMat(const cv::Mat &mat) { // encode mat to bytes
-  CvMat encoded_mat;
-  encoded_mat.set_rows(mat.rows);
-  encoded_mat.set_cols(mat.cols);
-  encoded_mat.set_elt_type(mat.type());
-  encoded_mat.set_elt_size(int(mat.elemSize()));
-  encoded_mat.set_data(mat.data, mat.rows * mat.cols * mat.elemSize());
+inline CvMat *serializeCvMat(const cv::Mat &mat) { // encode mat to bytes
+  LOG(INFO) << "serializeCvMat: [" << mat.rows << "x" << mat.cols << "]";
+
+  CvMat *encoded_mat = new CvMat();
+  encoded_mat->set_rows(mat.rows);
+  encoded_mat->set_cols(mat.cols);
+  encoded_mat->set_elt_type(mat.type());
+  encoded_mat->set_elt_size(int(mat.elemSize()));
+  encoded_mat->set_data(mat.data, mat.rows * mat.cols * mat.elemSize());
 
   return encoded_mat;
 }
@@ -137,7 +168,7 @@ public:
     RET_CHECK(cc->Outputs().HasTag(OUTPUT));
 
     // set stream_names' tags
-    cc->Inputs().Tag(INPUT_IMAGE).Set<InputFrame>();
+    cc->Inputs().Tag(INPUT_IMAGE).Set<ImageFrame>();
     cc->Inputs().Tag(INPUT_RECTS).Set<std::vector<NormalizedRect>>();
     cc->Inputs()
         .Tag(INPUT_LANDMARKS)
@@ -182,11 +213,13 @@ public:
     // COMPUTE FACE'S IMAGE AND LANDMARKS...
     std::vector<FaceLandmarks> multi_faces_with_landmarks;
     for (int i = 0; i < rects.size(); i++) {
-      float size_ = std::max(rect.width(), rect.height());
+      float size_ = std::max(rects[i].width() * image_width,
+                             rects[i].height() *
+                                 image_height); // unnormalize to squared roi
       cv::Rect bbox =
           computeRectBbox(rects[i], image_width, image_height,
                           size_); // return squared bbox (size_Xsize_)
-      std::vector<cv::Point3f> landmark_points =
+      std::vector<cv::Point3d> landmark_points =
           convertNormalizedLandmarksToPoints(
               multi_face_landmarks[i], image_width,
               image_height); // unnormalize landmarks
@@ -199,18 +232,19 @@ public:
                                          float(roi.rows) / 2 - size_ / 2, size_,
                                          size_),
                                 landmark_points);
-      cv::resize(roi, roi, target_size, 0, 0, cv::INTER_CUBIC);
+      cv::resize(roi, roi, target_size, 0, 0, cv::INTER_AREA);
 
       FaceLandmarks face_with_landmarks;
-      face_with_landmarks.set_data(serializeCvMat(roi));
-      face_with_landmarks.set_landmarks(convertPointsToNormalizedLandmarks(
-          landmark_points, multi_face_landmarks[i], size_,
-          size_)); // not affected by rescaling
-      multi_face_with_landmarks.push_back(face_with_landmarks);
+      // https://stackoverflow.com/questions/53648009/google-protobuf-mutable-foo-or-set-allocated-foo
+      face_with_landmarks.set_allocated_data(serializeCvMat(roi));
+      face_with_landmarks.set_allocated_landmarks(
+          convertPointsToNormalizedLandmarks(
+              landmark_points, multi_face_landmarks[i], size_, size_));
+      multi_faces_with_landmarks.push_back(face_with_landmarks);
     }
 
     // GENERATE OUTPUT...
-    cc->Outputs().Tag(OUTPUT).Add(multi_face_with_landmarks,
+    cc->Outputs().Tag(OUTPUT).Add(&multi_faces_with_landmarks,
                                   cc->InputTimestamp());
 
     return ::mediapipe::OkStatus();

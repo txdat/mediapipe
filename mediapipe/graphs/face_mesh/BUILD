@@ -56,7 +56,7 @@ cc_library(
     name = "mobile_calculators",
     deps = [
         "//mediapipe/calculators/core:flow_limiter_calculator",
-        "//mediapipe/graphs/face_mesh/subgraphs:face_renderer_gpu",
+        "//mediapipe/graphs/face_mesh/subgraphs:face_crop_and_align",
         "//mediapipe/modules/face_landmark:face_landmark_front_gpu",
     ],
 )

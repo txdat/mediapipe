@@ -17,5 +17,5 @@ message CvMat {
 
 message FaceLandmarks {
   required CvMat data = 1;
-  required NormalizedLandmark landmarks = 2;
+  required NormalizedLandmarkList landmarks = 2;
 }

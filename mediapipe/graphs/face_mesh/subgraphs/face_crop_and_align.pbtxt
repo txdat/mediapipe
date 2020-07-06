@@ -17,8 +17,8 @@ output_stream: "FACE_LANDMARKS:multi_faces_with_landmarks"
 # Node for converting GpuBuffer -> ImageFrame
 node {
   calculator: "GpuBufferToImageFrameCalculator",
-  input_stream: "IMAGE:input_image",
-  output_stream: "IMAGE:input_image_frame"
+  input_stream: "input_image",
+  output_stream: "input_image_frame"
 }
 
 # Node for computing ...
