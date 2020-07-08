@@ -19,7 +19,3 @@ message FaceLandmarks {
   required CvMat data = 1;
   required NormalizedLandmarkList landmarks = 2;
 }
-
-message FaceLandmarksList {
-  repeated FaceLandmarks face_landmarks = 1;
-}

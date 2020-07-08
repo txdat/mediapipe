@@ -16,6 +16,7 @@ cc_library(
         "//mediapipe/framework/port:opencv_core",
         "//mediapipe/framework/port:opencv_imgproc",
         "//mediapipe/framework/port:ret_check",
+        "//third_party:glog",
     ],
     alwayslink = 1,
 )

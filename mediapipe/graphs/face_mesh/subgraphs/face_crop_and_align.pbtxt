@@ -8,27 +8,29 @@ input_stream: "LANDMARKS:multi_face_landmarks"
 input_stream: "NORM_RECTS:rects"
 # Face's target_size after rescaling
 input_side_packet: "TARGET_SIZE:target_size"
+# Server's address (string, int)
+input_side_packet: "SERVER_URL:server_url"
+input_side_packet: "SERVER_PORT:server_port"
 
 # GpuBuffer image with rendered ROIs
 output_stream: "IMAGE:output_image"
-# Cropped/Aligned faces with computed landmarks wrt new axises
-output_stream: "FACE_LANDMARKS:multi_faces_with_landmarks"
 
 # Node for converting GpuBuffer -> ImageFrame
 node {
-  calculator: "GpuBufferToImageFrameCalculator",
-  input_stream: "input_image",
+  calculator: "GpuBufferToImageFrameCalculator"
+  input_stream: "input_image"
   output_stream: "input_image_frame"
 }
 
-# Node for computing ...
+# Node for computing and sending to server via udp...
 node {
   calculator: "FaceCropAndAlignCalculator"
   input_stream: "IMAGE:input_image_frame"
   input_stream: "LANDMARKS:multi_face_landmarks"
   input_stream: "NORM_RECTS:rects"
   input_side_packet: "TARGET_SIZE:target_size"
-  output_stream: "FACE_LANDMARKS:multi_faces_with_landmarks"
+  input_side_packet: "SERVER_URL:server_url"
+  input_side_packet: "SERVER_PORT:server_port"
 }
 
 # Nodes for rendering ROIs (rects)

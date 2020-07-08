@@ -9,14 +9,15 @@ input_side_packet: "num_faces"
 # Target size of face after aligning (int)
 input_side_packet: "target_size"
 
+# Server's address (string, int)
+input_side_packet: "server_url"
+input_side_packet: "server_port"
+
 # Output image with rendered results. (GpuBuffer)
 output_stream: "output_video"
 # Collection of detected/processed faces, each represented as a list of
 # landmarks. (std::vector<NormalizedLandmarkList>)
 #output_stream: "multi_face_landmarks"
-# Collection of cropped/aligned faces, new computed landmarks wrt new axises
-# (std::vector<FaceLandmarks>)
-output_stream: "multi_faces_with_landmarks"
 
 # Throttles the images flowing downstream for flow control. It passes through
 # the very first incoming image unaltered, and waits for downstream nodes
@@ -66,6 +67,7 @@ node {
   input_stream: "LANDMARKS:multi_face_landmarks"
   input_stream: "NORM_RECTS:face_rects_from_landmarks"
   input_side_packet: "TARGET_SIZE:target_size"
+  input_side_packet: "SERVER_URL:server_url"
+  input_side_packet: "SERVER_PORT:server_port"
   output_stream: "IMAGE:output_video"
-  output_stream: "FACE_LANDMARKS:multi_faces_with_landmarks"
 }

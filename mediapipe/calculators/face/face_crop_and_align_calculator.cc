@@ -1,3 +1,4 @@
+#include "glog/logging.h"
 #include "mediapipe/framework/calculator_framework.h"
 #include "mediapipe/framework/formats/face_data.pb.h"
 #include "mediapipe/framework/formats/image_frame.h"
@@ -7,11 +8,17 @@
 #include "mediapipe/framework/port/opencv_core_inc.h"
 #include "mediapipe/framework/port/opencv_imgproc_inc.h"
 #include "mediapipe/framework/port/ret_check.h"
-// #include "glog/logging.h"
 
 #include <algorithm>
+#include <arpa/inet.h>
+#include <cerrno>
 #include <cmath>
+#include <exception>
 #include <memory>
+#include <netinet/in.h>
+#include <string>
+#include <sys/socket.h>
+#include <sys/types.h>
 #include <vector>
 
 #define RADIAN_TO_DEGREE(r) (r) * 180 / M_PI
@@ -26,8 +33,10 @@ constexpr char INPUT_RECTS[] =
 constexpr char INPUT_LANDMARKS[] =
     "LANDMARKS"; // std::vector<NormalizedLandmarkList>,
                  // coordiates are in [0, 1]
-constexpr char INPUT_TARGET_SIZE[] = "TARGET_SIZE"; // int (side_packet)
-constexpr char OUTPUT[] = "FACE_LANDMARKS"; // std::vector<FaceLandmarks>
+// SIDE_PACKET
+constexpr char INPUT_TARGET_SIZE[] = "TARGET_SIZE"; // int
+constexpr char INPUT_SERVER_URL[] = "SERVER_URL";   // string
+constexpr char INPUT_SERVER_PORT[] = "SERVER_PORT"; // int
 
 //----------------------------------------
 // ROTATED RECTANGLE CROPPING WITH POINTS
@@ -36,9 +45,6 @@ constexpr char OUTPUT[] = "FACE_LANDMARKS"; // std::vector<FaceLandmarks>
 inline std::vector<cv::Point3d>
 convertNormalizedLandmarksToPoints(const NormalizedLandmarkList &landmark_list,
                                    float image_width, float image_height) {
-  // LOG(INFO) << "convertNormalizedLandmarksToPoints: "
-  //           << landmark_list.landmark_size() << " points";
-
   std::vector<cv::Point3d> landmark_points;
   for (int i = 0; i < landmark_list.landmark_size(); i++) { // skip z-axis
     const NormalizedLandmark &landmark = landmark_list.landmark(i);
@@ -53,20 +59,13 @@ inline NormalizedLandmarkList *convertPointsToNormalizedLandmarks(
     const std::vector<cv::Point3d> &landmark_points,
     const NormalizedLandmarkList &landmark_list, float image_width,
     float image_height) {
-  // LOG(INFO) << "convertPointsToNormalizedLandmarks: " <<
-  // landmark_points.size()
-  //           << " points";
-
   NormalizedLandmarkList *landmark_list_ = new NormalizedLandmarkList();
   for (int i = 0; i < landmark_points.size(); i++) { // skip z-axis
-    landmark_list_->add_landmark();
-    landmark_list_->mutable_landmark(i)->set_x(landmark_points[i].x /
-                                               image_width);
-    landmark_list_->mutable_landmark(i)->set_y(landmark_points[i].y /
-                                               image_height);
-    landmark_list_->mutable_landmark(i)->set_z(landmark_points[i].z);
-    landmark_list_->mutable_landmark(i)->set_visibility(
-        landmark_list.landmark(i).visibility());
+    auto curr = landmark_list_->add_landmark();
+    curr->set_x(landmark_points[i].x / image_width);
+    curr->set_y(landmark_points[i].y / image_height);
+    curr->set_z(landmark_points[i].z);
+    curr->set_visibility(landmark_list.landmark(i).visibility());
   }
 
   return landmark_list_;
@@ -74,8 +73,6 @@ inline NormalizedLandmarkList *convertPointsToNormalizedLandmarks(
 
 inline cv::Rect computeRectBbox(const NormalizedRect &rect, float image_width,
                                 float image_height, float size_) {
-  // LOG(INFO) << "computeRectBbox: rect:\n" << rect.DebugString();
-
   cv::RotatedRect rotated_rect = cv::RotatedRect(
       cv::Point2f(rect.x_center() * image_width,
                   rect.y_center() * image_height),
@@ -86,9 +83,6 @@ inline cv::Rect computeRectBbox(const NormalizedRect &rect, float image_width,
 
 inline cv::Mat cropImageWithPoints(const cv::Mat &image, const cv::Rect &rect,
                                    std::vector<cv::Point3d> &points) {
-  // LOG(INFO) << "cropImageWithPoints: rect: " << rect << ", image: ["
-  //           << image.rows << "x" << image.cols << "]";
-
   // padding image for cropping
   int top = std::max(-rect.y, 0);
   int bottom = std::max(rect.y + rect.height - image.rows, 0);
@@ -112,8 +106,6 @@ inline cv::Mat cropImageWithPoints(const cv::Mat &image, const cv::Rect &rect,
 inline cv::Mat rotateImageWithPoints(const cv::Mat &image,
                                      std::vector<cv::Point3d> &points,
                                      double rotation) {
-  // LOG(INFO) << "rotateImageWithPoints: rotation: " << rotation;
-
   cv::Mat rotation_mat = cv::getRotationMatrix2D(
       cv::Point2f(float(image.cols) / 2.0, float(image.rows) / 2.0), rotation,
       /*scale*/ 1.0);
@@ -144,8 +136,6 @@ inline cv::Mat rotateImageWithPoints(const cv::Mat &image,
 }
 
 inline CvMat *serializeCvMat(const cv::Mat &mat) { // encode mat to bytes
-  // LOG(INFO) << "serializeCvMat: [" << mat.rows << "x" << mat.cols << "]";
-
   CvMat *encoded_mat = new CvMat();
   encoded_mat->set_rows(mat.rows);
   encoded_mat->set_cols(mat.cols);
@@ -157,8 +147,21 @@ inline CvMat *serializeCvMat(const cv::Mat &mat) { // encode mat to bytes
 }
 
 class FaceCropAndAlignCalculator : public CalculatorBase {
+  // node {
+  //   calculator: "FaceCropAndAlignCalculator"
+  //   input_stream: "IMAGE:input_image_frame"
+  //   input_stream: "LANDMARKS:multi_face_landmarks"
+  //   input_stream: "NORM_RECTS:rects"
+  //   input_side_packet: "TARGET_SIZE:target_size"
+  //   input_side_packet: "SERVER_URL:server_url"
+  //   input_side_packet: "SERVER_PORT:server_port"
+  // }
+
 private:
-  cv::Size target_size = cv::Size(224, 224); // face's size after rescaling
+  int sockfd;
+  struct sockaddr_in server_addr;
+
+  cv::Size target_size; // face's size after rescaling
 
 public:
   static ::mediapipe::Status GetContract(CalculatorContract *cc) {
@@ -166,7 +169,9 @@ public:
     RET_CHECK(cc->Inputs().HasTag(INPUT_IMAGE));
     RET_CHECK(cc->Inputs().HasTag(INPUT_RECTS));
     RET_CHECK(cc->Inputs().HasTag(INPUT_LANDMARKS));
-    RET_CHECK(cc->Outputs().HasTag(OUTPUT));
+    RET_CHECK(cc->InputSidePackets().HasTag(INPUT_TARGET_SIZE));
+    RET_CHECK(cc->InputSidePackets().HasTag(INPUT_SERVER_URL));
+    RET_CHECK(cc->InputSidePackets().HasTag(INPUT_SERVER_PORT));
 
     // set stream_names' tags
     cc->Inputs().Tag(INPUT_IMAGE).Set<ImageFrame>();
@@ -174,12 +179,9 @@ public:
     cc->Inputs()
         .Tag(INPUT_LANDMARKS)
         .Set<std::vector<NormalizedLandmarkList>>();
-    cc->Outputs().Tag(OUTPUT).Set<FaceLandmarksList>();
-
-    // check side_packet's tag (optional)
-    if (cc->InputSidePackets().HasTag(INPUT_TARGET_SIZE)) {
-      cc->InputSidePackets().Tag(INPUT_TARGET_SIZE).Set<int>();
-    }
+    cc->InputSidePackets().Tag(INPUT_TARGET_SIZE).Set<int>();
+    cc->InputSidePackets().Tag(INPUT_SERVER_URL).Set<std::string>();
+    cc->InputSidePackets().Tag(INPUT_SERVER_PORT).Set<int>();
 
     return ::mediapipe::OkStatus();
   }
@@ -187,67 +189,95 @@ public:
   ::mediapipe::Status Open(CalculatorContext *cc) {
     cc->SetOffset(TimestampDiff(0));
 
-    if (cc->InputSidePackets().HasTag(
-            INPUT_TARGET_SIZE)) { // get new target_size if available
-      int size_ = cc->InputSidePackets().Tag(INPUT_TARGET_SIZE).Get<int>();
-      target_size = cv::Size(size_, size_);
+    int size_ = cc->InputSidePackets().Tag(INPUT_TARGET_SIZE).Get<int>();
+    target_size = cv::Size(size_, size_);
+
+    std::string server_url =
+        cc->InputSidePackets().Tag(INPUT_SERVER_URL).Get<std::string>();
+    int server_port = cc->InputSidePackets().Tag(INPUT_SERVER_PORT).Get<int>();
+    if ((sockfd = socket(AF_INET, SOCK_DGRAM, 0)) <
+        0) { // create new ipv4 socket for udp
+      LOG(ERROR) << "failed to initialize udp socket (" << sockfd << ")";
+    } else {
+      LOG(INFO) << "initialized udp socket (" << sockfd << ")";
+    }
+
+    if (sockfd >= 0) {
+      memset(&server_addr, 0, sizeof(server_addr));
+      server_addr.sin_family = AF_INET; // ipv4
+      server_addr.sin_port = htons(server_port);
+      server_addr.sin_addr.s_addr = inet_addr(server_url.c_str());
     }
 
     return ::mediapipe::OkStatus();
   }
 
   ::mediapipe::Status Process(CalculatorContext *cc) {
-    // GET INPUTS FROM STREAMS...
-    const ImageFrame &input_frame =
-        cc->Inputs().Tag(INPUT_IMAGE).Get<ImageFrame>();
-    cv::Mat image = formats::MatView(&input_frame);
-    float image_width = image.cols, image_height = image.rows;
+    if (!(sockfd < 0 || cc->Inputs().Tag(INPUT_RECTS).IsEmpty() ||
+          cc->Inputs().Tag(INPUT_LANDMARKS).IsEmpty())) {
+      // GET INPUTS FROM STREAMS...
+      const ImageFrame &input_frame =
+          cc->Inputs().Tag(INPUT_IMAGE).Get<ImageFrame>();
+      cv::Mat image = formats::MatView(&input_frame);
+      float image_width = image.cols, image_height = image.rows;
 
-    const std::vector<NormalizedRect> &rects =
-        cc->Inputs().Tag(INPUT_RECTS).Get<std::vector<NormalizedRect>>();
+      const std::vector<NormalizedRect> &rects =
+          cc->Inputs().Tag(INPUT_RECTS).Get<std::vector<NormalizedRect>>();
 
-    const std::vector<NormalizedLandmarkList> &multi_face_landmarks =
-        cc->Inputs()
-            .Tag(INPUT_LANDMARKS)
-            .Get<std::vector<NormalizedLandmarkList>>();
+      const std::vector<NormalizedLandmarkList> &multi_face_landmarks =
+          cc->Inputs()
+              .Tag(INPUT_LANDMARKS)
+              .Get<std::vector<NormalizedLandmarkList>>();
 
-    // COMPUTE FACE'S IMAGE AND LANDMARKS...
-    FaceLandmarksList *multi_faces_with_landmarks = new FaceLandmarksList();
-    for (int i = 0; i < rects.size(); i++) {
-      multi_faces_with_landmarks->add_face_landmarks();
+      LOG(INFO) << "input_image [" << image_width << "x" << image_height
+                << "]: " << rects.size() << " rects, "
+                << multi_face_landmarks.size() << " landmarks";
 
-      float size_ = std::max(rects[i].width() * image_width,
-                             rects[i].height() *
-                                 image_height); // unnormalize to squared roi
-      cv::Rect bbox =
-          computeRectBbox(rects[i], image_width, image_height,
-                          size_); // return squared bbox (size_Xsize_)
-      std::vector<cv::Point3d> landmark_points =
-          convertNormalizedLandmarksToPoints(
-              multi_face_landmarks[i], image_width,
-              image_height); // unnormalize landmarks
+      // COMPUTING...
+      for (int i = 0; i < rects.size(); i++) {
+        float size_ = std::max(rects[i].width() * image_width,
+                               rects[i].height() *
+                                   image_height); // unnormalize to squared roi
+        cv::Rect bbox =
+            computeRectBbox(rects[i], image_width, image_height,
+                            size_); // return squared bbox (size_Xsize_)
+        std::vector<cv::Point3d> landmark_points =
+            convertNormalizedLandmarksToPoints(
+                multi_face_landmarks[i], image_width,
+                image_height); // unnormalize landmarks
 
-      cv::Mat roi = cropImageWithPoints(image, bbox, landmark_points);
-      roi = rotateImageWithPoints(roi, landmark_points,
-                                  RADIAN_TO_DEGREE(rects[i].rotation()));
-      roi = cropImageWithPoints(roi,
-                                cv::Rect(float(roi.cols) / 2 - size_ / 2,
-                                         float(roi.rows) / 2 - size_ / 2, size_,
-                                         size_),
-                                landmark_points);
-      cv::resize(roi, roi, target_size, 0, 0, cv::INTER_CUBIC);
+        cv::Mat roi = cropImageWithPoints(image, bbox, landmark_points);
+        roi = rotateImageWithPoints(roi, landmark_points,
+                                    RADIAN_TO_DEGREE(rects[i].rotation()));
+        roi = cropImageWithPoints(roi,
+                                  cv::Rect(float(roi.cols) / 2 - size_ / 2,
+                                           float(roi.rows) / 2 - size_ / 2,
+                                           size_, size_),
+                                  landmark_points);
+        cv::resize(roi, roi, target_size, 0, 0, cv::INTER_CUBIC);
 
-      // https://stackoverflow.com/questions/53648009/google-protobuf-mutable-foo-or-set-allocated-foo
-      multi_faces_with_landmarks->mutable_face_landmarks(i)->set_allocated_data(
-          serializeCvMat(roi));
-      multi_faces_with_landmarks->mutable_face_landmarks(i)
-          ->set_allocated_landmarks(convertPointsToNormalizedLandmarks(
-              landmark_points, multi_face_landmarks[i], size_, size_));
+        std::unique_ptr<FaceLandmarks> face_landmarks(new FaceLandmarks());
+        face_landmarks->set_allocated_data(serializeCvMat(roi));
+        face_landmarks->set_allocated_landmarks(
+            convertPointsToNormalizedLandmarks(
+                landmark_points, multi_face_landmarks[i], size_, size_));
+
+        std::string buffer;
+        face_landmarks->SerializeToString(&buffer);
+
+        if (sendto(sockfd, buffer.c_str(), buffer.length(), 0,
+                   (const struct sockaddr *)&server_addr,
+                   sizeof(server_addr)) < 0) {
+          LOG(ERROR) << "failed to send data (" << std::strerror(errno) << ")";
+        }
+      }
     }
 
-    // GENERATE OUTPUT...
-    cc->Outputs().Tag(OUTPUT).Add(multi_faces_with_landmarks,
-                                  cc->InputTimestamp());
+    return ::mediapipe::OkStatus();
+  }
+
+  ::mediapipe::Status Close(CalculatorContext *cc) {
+    close(sockfd);
 
     return ::mediapipe::OkStatus();
   }
