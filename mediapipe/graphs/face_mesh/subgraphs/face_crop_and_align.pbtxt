@@ -8,12 +8,11 @@ input_stream: "LANDMARKS:multi_face_landmarks"
 input_stream: "NORM_RECTS:rects"
 # Face's target_size after rescaling
 input_side_packet: "TARGET_SIZE:target_size"
-# Server's address (string, int)
-input_side_packet: "SERVER_URL:server_url"
-input_side_packet: "SERVER_PORT:server_port"
 
 # GpuBuffer image with rendered ROIs
 output_stream: "IMAGE:output_image"
+# Collection of cropped/rotated faces and corresponding landmarks (FaceLandmarksList)
+output_stream: "FACE_AND_LANDMARKS:multi_face_and_landmarks"
 
 # Node for converting GpuBuffer -> ImageFrame
 node {
@@ -29,8 +28,7 @@ node {
   input_stream: "LANDMARKS:multi_face_landmarks"
   input_stream: "NORM_RECTS:rects"
   input_side_packet: "TARGET_SIZE:target_size"
-  input_side_packet: "SERVER_URL:server_url"
-  input_side_packet: "SERVER_PORT:server_port"
+  output_stream: "FACE_AND_LANDMARKS:multi_face_and_landmarks"
 }
 
 # Nodes for rendering ROIs (rects)

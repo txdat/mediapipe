@@ -10,15 +10,9 @@
 #include "mediapipe/framework/port/ret_check.h"
 
 #include <algorithm>
-#include <arpa/inet.h>
-#include <cerrno>
 #include <cmath>
-#include <exception>
 #include <memory>
-#include <netinet/in.h>
 #include <string>
-#include <sys/socket.h>
-#include <sys/types.h>
 #include <vector>
 
 #define RADIAN_TO_DEGREE(r) (r) * 180 / M_PI
@@ -33,10 +27,9 @@ constexpr char INPUT_RECTS[] =
 constexpr char INPUT_LANDMARKS[] =
     "LANDMARKS"; // std::vector<NormalizedLandmarkList>,
                  // coordiates are in [0, 1]
+constexpr char OUTPUT[] = "FACE_AND_LANDMARKS"; // FaceLandmarksList
 // SIDE_PACKET
 constexpr char INPUT_TARGET_SIZE[] = "TARGET_SIZE"; // int
-constexpr char INPUT_SERVER_URL[] = "SERVER_URL";   // string
-constexpr char INPUT_SERVER_PORT[] = "SERVER_PORT"; // int
 
 //----------------------------------------
 // ROTATED RECTANGLE CROPPING WITH POINTS
@@ -153,14 +146,10 @@ class FaceCropAndAlignCalculator : public CalculatorBase {
   //   input_stream: "LANDMARKS:multi_face_landmarks"
   //   input_stream: "NORM_RECTS:rects"
   //   input_side_packet: "TARGET_SIZE:target_size"
-  //   input_side_packet: "SERVER_URL:server_url"
-  //   input_side_packet: "SERVER_PORT:server_port"
+  //   output_stream: "FACE_AND_LANDMARKS:multi_face_and_landmarks"
   // }
 
 private:
-  int sockfd;
-  struct sockaddr_in server_addr;
-
   cv::Size target_size; // face's size after rescaling
 
 public:
@@ -169,9 +158,8 @@ public:
     RET_CHECK(cc->Inputs().HasTag(INPUT_IMAGE));
     RET_CHECK(cc->Inputs().HasTag(INPUT_RECTS));
     RET_CHECK(cc->Inputs().HasTag(INPUT_LANDMARKS));
+    RET_CHECK(cc->Outputs().HasTag(OUTPUT));
     RET_CHECK(cc->InputSidePackets().HasTag(INPUT_TARGET_SIZE));
-    RET_CHECK(cc->InputSidePackets().HasTag(INPUT_SERVER_URL));
-    RET_CHECK(cc->InputSidePackets().HasTag(INPUT_SERVER_PORT));
 
     // set stream_names' tags
     cc->Inputs().Tag(INPUT_IMAGE).Set<ImageFrame>();
@@ -179,9 +167,8 @@ public:
     cc->Inputs()
         .Tag(INPUT_LANDMARKS)
         .Set<std::vector<NormalizedLandmarkList>>();
+    cc->Outputs().Tag(OUTPUT).Set<FaceLandmarksList>();
     cc->InputSidePackets().Tag(INPUT_TARGET_SIZE).Set<int>();
-    cc->InputSidePackets().Tag(INPUT_SERVER_URL).Set<std::string>();
-    cc->InputSidePackets().Tag(INPUT_SERVER_PORT).Set<int>();
 
     return ::mediapipe::OkStatus();
   }
@@ -191,29 +178,15 @@ public:
 
     int size_ = cc->InputSidePackets().Tag(INPUT_TARGET_SIZE).Get<int>();
     target_size = cv::Size(size_, size_);
-
-    std::string server_url =
-        cc->InputSidePackets().Tag(INPUT_SERVER_URL).Get<std::string>();
-    int server_port = cc->InputSidePackets().Tag(INPUT_SERVER_PORT).Get<int>();
-    if ((sockfd = socket(AF_INET, SOCK_DGRAM, 0)) <
-        0) { // create new ipv4 socket for udp
-      LOG(ERROR) << "failed to initialize udp socket (" << sockfd << ")";
-    } else {
-      LOG(INFO) << "initialized udp socket (" << sockfd << ")";
-    }
-
-    if (sockfd >= 0) {
-      memset(&server_addr, 0, sizeof(server_addr));
-      server_addr.sin_family = AF_INET; // ipv4
-      server_addr.sin_port = htons(server_port);
-      server_addr.sin_addr.s_addr = inet_addr(server_url.c_str());
-    }
+    LOG(INFO) << "target image size: " << target_size;
 
     return ::mediapipe::OkStatus();
   }
 
   ::mediapipe::Status Process(CalculatorContext *cc) {
-    if (!(sockfd < 0 || cc->Inputs().Tag(INPUT_RECTS).IsEmpty() ||
+    FaceLandmarksList *multi_face_and_landmarks = new FaceLandmarksList();
+
+    if (!(cc->Inputs().Tag(INPUT_RECTS).IsEmpty() ||
           cc->Inputs().Tag(INPUT_LANDMARKS).IsEmpty())) {
       // GET INPUTS FROM STREAMS...
       const ImageFrame &input_frame =
@@ -235,6 +208,8 @@ public:
 
       // COMPUTING...
       for (int i = 0; i < rects.size(); i++) {
+        auto curr = multi_face_and_landmarks->add_face_landmarks();
+
         float size_ = std::max(rects[i].width() * image_width,
                                rects[i].height() *
                                    image_height); // unnormalize to squared roi
@@ -256,28 +231,16 @@ public:
                                   landmark_points);
         cv::resize(roi, roi, target_size, 0, 0, cv::INTER_CUBIC);
 
-        std::unique_ptr<FaceLandmarks> face_landmarks(new FaceLandmarks());
-        face_landmarks->set_allocated_data(serializeCvMat(roi));
-        face_landmarks->set_allocated_landmarks(
-            convertPointsToNormalizedLandmarks(
-                landmark_points, multi_face_landmarks[i], size_, size_));
+        curr->set_allocated_data(serializeCvMat(roi));
+        curr->set_allocated_landmarks(convertPointsToNormalizedLandmarks(
+            landmark_points, multi_face_landmarks[i], size_, size_));
 
-        std::string buffer;
-        face_landmarks->SerializeToString(&buffer);
-
-        if (sendto(sockfd, buffer.c_str(), buffer.length(), 0,
-                   (const struct sockaddr *)&server_addr,
-                   sizeof(server_addr)) < 0) {
-          LOG(ERROR) << "failed to send data (" << std::strerror(errno) << ")";
-        }
+        LOG(INFO) << multi_face_and_landmarks->face_landmarks_size();
       }
     }
 
-    return ::mediapipe::OkStatus();
-  }
-
-  ::mediapipe::Status Close(CalculatorContext *cc) {
-    close(sockfd);
+    cc->Outputs().Tag(OUTPUT).Add(multi_face_and_landmarks,
+                                  cc->InputTimestamp());
 
     return ::mediapipe::OkStatus();
   }
