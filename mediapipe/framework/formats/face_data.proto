@@ -8,16 +8,16 @@ option java_package = "com.google.mediapipe.formats.proto";
 option java_outer_classname = "FaceDataProto";
 
 message CvMat {
-  required int32 rows = 1;
-  required int32 cols = 2;
-  required int32 elt_type = 3;
-  required int32 elt_size = 4;
-  required bytes data = 5;
+  optional int32 rows = 1;
+  optional int32 cols = 2;
+  optional int32 elt_type = 3;
+  optional int32 elt_size = 4;
+  optional bytes data = 5;
 }
 
 message FaceLandmarks {
-  required CvMat data = 1;
-  required NormalizedLandmarkList landmarks = 2;
+  optional CvMat data = 1;
+  optional NormalizedLandmarkList landmarks = 2;
 }
 
 message FaceLandmarksList {

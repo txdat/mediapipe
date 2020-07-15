@@ -39,10 +39,10 @@ inline std::vector<cv::Point3d>
 convertNormalizedLandmarksToPoints(const NormalizedLandmarkList &landmark_list,
                                    float image_width, float image_height) {
   std::vector<cv::Point3d> landmark_points;
-  for (int i = 0; i < landmark_list.landmark_size(); i++) { // skip z-axis
+  for (int i = 0; i < landmark_list.landmark_size(); i++) {
     const NormalizedLandmark &landmark = landmark_list.landmark(i);
-    landmark_points.push_back(cv::Point3d(
-        landmark.x() * image_width, landmark.y() * image_height, landmark.z()));
+    landmark_points.push_back(cv::Point3d(landmark.x() * image_width,
+                                          landmark.y() * image_height, 1));
   }
 
   return landmark_points;
@@ -53,11 +53,11 @@ inline NormalizedLandmarkList *convertPointsToNormalizedLandmarks(
     const NormalizedLandmarkList &landmark_list, float image_width,
     float image_height) {
   NormalizedLandmarkList *landmark_list_ = new NormalizedLandmarkList();
-  for (int i = 0; i < landmark_points.size(); i++) { // skip z-axis
+  for (int i = 0; i < landmark_points.size(); i++) {
     auto curr = landmark_list_->add_landmark();
     curr->set_x(landmark_points[i].x / image_width);
     curr->set_y(landmark_points[i].y / image_height);
-    curr->set_z(landmark_points[i].z);
+    curr->set_z(landmark_list.landmark(i).z());
     curr->set_visibility(landmark_list.landmark(i).visibility());
   }
 
@@ -88,7 +88,7 @@ inline cv::Mat cropImageWithPoints(const cv::Mat &image, const cv::Rect &rect,
   cv::Rect rect_ =
       cv::Rect(rect.x + left, rect.y + top, rect.width, rect.height);
 
-  for (cv::Point3d &point : points) { // skip z-axis
+  for (cv::Point3d &point : points) {
     point.x += left - rect_.x;
     point.y += top - rect_.y;
   }
@@ -101,7 +101,7 @@ inline cv::Mat rotateImageWithPoints(const cv::Mat &image,
                                      double rotation) {
   cv::Mat rotation_mat = cv::getRotationMatrix2D(
       cv::Point2f(float(image.cols) / 2.0, float(image.rows) / 2.0), rotation,
-      /*scale*/ 1.0);
+      /*scale*/ 1.0); // [2x3]
 
   double abs_cos = std::abs(rotation_mat.at<double>(0, 0));
   double abs_sin = std::abs(rotation_mat.at<double>(0, 1));
@@ -118,9 +118,9 @@ inline cv::Mat rotateImageWithPoints(const cv::Mat &image,
 
   // rotate points
   cv::Mat point_mat = cv::Mat(points).reshape(1);
-  point_mat = rotation_mat * point_mat.t();
+  point_mat = rotation_mat * point_mat.t(); // [2xN]
 
-  for (int i = 0; i < points.size(); i++) { // skip z-axis
+  for (int i = 0; i < points.size(); i++) {
     points[i].x = point_mat.at<double>(0, i);
     points[i].y = point_mat.at<double>(1, i);
   }
@@ -202,9 +202,9 @@ public:
               .Tag(INPUT_LANDMARKS)
               .Get<std::vector<NormalizedLandmarkList>>();
 
-      LOG(INFO) << "input_image [" << image_width << "x" << image_height
-                << "]: " << rects.size() << " rects, "
-                << multi_face_landmarks.size() << " landmarks";
+      // LOG(INFO) << "input_image [" << image_width << "x" << image_height
+      //           << "]: " << rects.size() << " rects, "
+      //           << multi_face_landmarks.size() << " landmarks";
 
       // COMPUTING...
       for (int i = 0; i < rects.size(); i++) {
@@ -229,13 +229,12 @@ public:
                                            float(roi.rows) / 2 - size_ / 2,
                                            size_, size_),
                                   landmark_points);
+        cv::cvtColor(roi, roi, cv::COLOR_RGBA2BGR);
         cv::resize(roi, roi, target_size, 0, 0, cv::INTER_CUBIC);
 
         curr->set_allocated_data(serializeCvMat(roi));
         curr->set_allocated_landmarks(convertPointsToNormalizedLandmarks(
             landmark_points, multi_face_landmarks[i], size_, size_));
-
-        LOG(INFO) << multi_face_and_landmarks->face_landmarks_size();
       }
     }
 
