@@ -8,6 +8,8 @@ input_stream: "LANDMARKS:multi_face_landmarks"
 input_stream: "NORM_RECTS:rects"
 # Face's target_size after rescaling
 input_side_packet: "TARGET_SIZE:target_size"
+# Whether doing rotation or not
+input_side_packet: "DO_ROTATION:do_rotation"
 
 # GpuBuffer image with rendered ROIs
 output_stream: "IMAGE:output_image"
@@ -28,6 +30,7 @@ node {
   input_stream: "LANDMARKS:multi_face_landmarks"
   input_stream: "NORM_RECTS:rects"
   input_side_packet: "TARGET_SIZE:target_size"
+  input_side_packet: "DO_ROTATION:do_rotation"
   output_stream: "FACE_AND_LANDMARKS:multi_face_and_landmarks"
 }
 
