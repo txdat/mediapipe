@@ -42,8 +42,8 @@ convertNormalizedLandmarksToPoints(const NormalizedLandmarkList &landmark_list,
   std::vector<cv::Point3d> landmark_points;
   for (int i = 0; i < landmark_list.landmark_size(); i++) {
     const NormalizedLandmark &landmark = landmark_list.landmark(i);
-    landmark_points.push_back(cv::Point3d(
-        landmark.x() * image_width, landmark.y() * image_height, landmark.z()));
+    landmark_points.push_back(cv::Point3d(landmark.x() * image_width,
+                                          landmark.y() * image_height, 1));
   }
 
   return landmark_points;
@@ -54,11 +54,26 @@ inline NormalizedLandmarkList *convertPointsToNormalizedLandmarks(
     const NormalizedLandmarkList &landmark_list, float image_width,
     float image_height) {
   NormalizedLandmarkList *landmark_list_ = new NormalizedLandmarkList();
+
+  double min_z = landmark_list.landmark(0).z(),
+         max_z = landmark_list.landmark(0).z();
+  for (int i = 0; i < landmark_list.landmark_size(); i++) {
+    double z = landmark_list.landmark(i).z();
+    if (z < min_z) {
+      min_z = z;
+    }
+    if (z > max_z) {
+      max_z = z;
+    }
+  }
+  double range_z = max_z - min_z;
+
   for (int i = 0; i < landmark_points.size(); i++) {
     auto curr = landmark_list_->add_landmark();
     curr->set_x(landmark_points[i].x / image_width);
     curr->set_y(landmark_points[i].y / image_height);
-    curr->set_z(landmark_points[i].z);
+    curr->set_z(1.0 - ((landmark_list.landmark(i).z() - min_z) /
+                       range_z)); // normalize z to [0,1]
     curr->set_visibility(landmark_list.landmark(i).visibility());
   }
 
@@ -119,9 +134,6 @@ inline cv::Mat rotateImageWithPoints(const cv::Mat &image,
 
   // rotate points
   cv::Mat point_mat = cv::Mat(points).reshape(1); // [Nx3]
-  for (int i = 0; i < points.size(); i++) {
-    point_mat.at<double>(i, 2) = 1;
-  }
 
   point_mat = rotation_mat * point_mat.t(); // [2xN]
 
@@ -159,6 +171,7 @@ class FaceCropAndAlignCalculator
   //   input_stream: "LANDMARKS:multi_face_landmarks"
   //   input_stream: "NORM_RECTS:rects"
   //   input_side_packet: "TARGET_SIZE:target_size"
+  //   input_side_packet: "DO_ROTATION:do_rotation"
   //   output_stream: "FACE_AND_LANDMARKS:multi_face_and_landmarks"
   // }
 
