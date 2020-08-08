@@ -115,6 +115,7 @@ inline cv::Mat cropImageWithPoints(const cv::Mat &image, const cv::Rect &rect,
 inline cv::Mat rotateImageWithPoints(const cv::Mat &image,
                                      std::vector<cv::Point3d> &points,
                                      double rotation) {
+  // rotation rect: https://github.com/leimao/Rotated_Rectangle_Crop_OpenCV
   cv::Mat rotation_mat = cv::getRotationMatrix2D(
       cv::Point2f(float(image.cols) / 2.0, float(image.rows) / 2.0), rotation,
       /*scale*/ 1.0); // [2x3]
@@ -143,13 +144,6 @@ inline cv::Mat rotateImageWithPoints(const cv::Mat &image,
   }
 
   return rotated_image;
-}
-
-inline Viewpoint *computeViewpoint(const std::vector<cv::Point3d> &points,
-                                   int image_width, int image_height) {
-  Viewpoint *viewpoint = new Viewpoint();
-
-  return viewpoint;
 }
 
 inline CvMat *serializeCvMat(const cv::Mat &mat) { // encode mat to bytes
@@ -254,18 +248,10 @@ public:
 
         cv::Mat roi = cropImageWithPoints(image, bbox, landmark_points);
 
-        curr->set_allocated_viewpoint(
-            computeViewpoint(landmark_points, roi.rows, roi.cols));
-
         if (do_rotation) {
           // rotation based on rect
           roi = rotateImageWithPoints(roi, landmark_points,
                                       RADIAN_TO_DEGREE(rects[i].rotation()));
-
-          // rotation based on viewpoint
-          // roi = rotateImageWithPoints(
-          //     roi, landmark_points,
-          //     RADIAN_TO_DEGREE(curr->viewpoint().roll()));
 
           // re-crop after rotation
           roi = cropImageWithPoints(roi,

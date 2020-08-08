@@ -15,16 +15,9 @@ message CvMat {
   optional bytes data = 5;
 }
 
-message Viewpoint {
-  optional double yaw = 1;
-  optional double pitch = 2;
-  optional double roll = 3;
-}
-
 message FaceLandmarks {
   optional CvMat data = 1;
   optional NormalizedLandmarkList landmarks = 2;
-  optional Viewpoint viewpoint = 3;
 }
 
 message FaceLandmarksList {
